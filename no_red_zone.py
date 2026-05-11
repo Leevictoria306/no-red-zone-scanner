@@ -19,7 +19,7 @@ from concurrent.futures import (
 
 BASE_URL = "https://data-api.binance.vision"
 
-MIN_GREEN_DAYS = 4
+MIN_GREEN_DAYS = 3
 TOP_RESULTS = 20
 
 MAX_WORKERS = 25
