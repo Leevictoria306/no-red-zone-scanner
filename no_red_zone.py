@@ -18,7 +18,7 @@ from concurrent.futures import (
 # =========================================================
 
 BASE_URL = "https://data-api.binance.vision"
-
+EXECUTION_WINDOW_MINUTES = 3
 MIN_GREEN_DAYS = 3
 TOP_RESULTS = 20
 
@@ -106,6 +106,27 @@ def get_usdt_pairs():
 # GET KLINES
 # =========================================================
 
+def should_run_scan():
+
+    now = datetime.now(timezone.utc)
+
+    # TARGET = 23:50 UTC
+    target_hour = 23
+    target_minute = 50
+
+    current_minutes = (
+        now.hour * 60 + now.minute
+    )
+
+    target_minutes = (
+        target_hour * 60 + target_minute
+    )
+
+    difference = abs(
+        current_minutes - target_minutes
+    )
+
+    return difference <= EXECUTION_WINDOW_MINUTES
 def get_daily_klines(symbol, limit=10):
 
     url = f"{BASE_URL}/api/v3/klines"
@@ -400,6 +421,13 @@ def send_telegram(message):
 # =========================================================
 
 def main():
+    if not should_run_scan():
+
+    print(
+        "Not inside execution window."
+    )
+
+    return
 
     now = datetime.now(timezone.utc)
 
