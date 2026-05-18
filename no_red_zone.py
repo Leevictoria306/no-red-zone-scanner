@@ -1,5 +1,5 @@
+```python
 import os
-import math
 import requests
 import pandas as pd
 
@@ -18,13 +18,22 @@ from concurrent.futures import (
 # =========================================================
 
 BASE_URL = "https://data-api.binance.vision"
-EXECUTION_WINDOW_MINUTES = 3
+
 MIN_GREEN_DAYS = 3
 TOP_RESULTS = 20
 
 MAX_WORKERS = 25
 
 VERBOSE_SCAN = False
+
+# =========================================================
+# EXECUTION WINDOW
+# =========================================================
+
+# GitHub Actions runs every 5 mins.
+# Script only executes near 23:50 UTC.
+
+EXECUTION_WINDOW_MINUTES = 7
 
 # =========================================================
 # TELEGRAM
@@ -44,14 +53,49 @@ TELEGRAM_CHAT_ID = os.getenv(
 # STRATEGY TUNING
 # =========================================================
 
+# Reject tiny candles
 MIN_BODY_PERCENT = 1.0
 
+# Reject exhaustion candles
 MAX_FINAL_BODY_PERCENT = 35.0
 
+# Ideal exponential acceleration
 IDEAL_ACCELERATION_MIN = 1.4
 IDEAL_ACCELERATION_MAX = 4.5
 
+# Reject flattening
 MIN_LAST_EXPANSION = 1.15
+
+# =========================================================
+# SHOULD RUN?
+# =========================================================
+
+def should_run_scan():
+
+    now = datetime.now(timezone.utc)
+
+    target_hour = 23
+    target_minute = 50
+
+    current_minutes = (
+        now.hour * 60
+        + now.minute
+    )
+
+    target_minutes = (
+        target_hour * 60
+        + target_minute
+    )
+
+    difference = abs(
+        current_minutes
+        - target_minutes
+    )
+
+    return (
+        difference
+        <= EXECUTION_WINDOW_MINUTES
+    )
 
 # =========================================================
 # SHOULD USE CURRENT DAILY CANDLE?
@@ -59,7 +103,7 @@ MIN_LAST_EXPANSION = 1.15
 
 def should_use_latest_candle(now):
 
-    # ONLY use latest candle
+    # ONLY USE latest candle
     # after UTC 23:50
 
     if (
@@ -93,41 +137,31 @@ def get_usdt_pairs():
     for symbol in data["symbols"]:
 
         if (
-            symbol.get("quoteAsset") == "USDT"
-            and symbol.get("status") == "TRADING"
-            and symbol.get("isSpotTradingAllowed")
+            symbol.get("quoteAsset")
+            == "USDT"
+
+            and symbol.get("status")
+            == "TRADING"
+
+            and symbol.get(
+                "isSpotTradingAllowed"
+            )
         ):
 
-            pairs.append(symbol["symbol"])
+            pairs.append(
+                symbol["symbol"]
+            )
 
     return pairs
 
 # =========================================================
-# GET KLINES
+# GET DAILY KLINES
 # =========================================================
 
-def should_run_scan():
-
-    now = datetime.now(timezone.utc)
-
-    # TARGET = 23:50 UTC
-    target_hour = 23
-    target_minute = 50
-
-    current_minutes = (
-        now.hour * 60 + now.minute
-    )
-
-    target_minutes = (
-        target_hour * 60 + target_minute
-    )
-
-    difference = abs(
-        current_minutes - target_minutes
-    )
-
-    return difference <= EXECUTION_WINDOW_MINUTES
-def get_daily_klines(symbol, limit=10):
+def get_daily_klines(
+    symbol,
+    limit=10
+):
 
     url = f"{BASE_URL}/api/v3/klines"
 
@@ -176,6 +210,7 @@ def get_daily_klines(symbol, limit=10):
         ]
 
         for col in numeric_cols:
+
             df[col] = df[col].astype(float)
 
         return df
@@ -193,58 +228,102 @@ def qualifies(
     days=MIN_GREEN_DAYS
 ):
 
+    # =====================================================
+    # SELECT CANDLES
+    # =====================================================
+
     if use_latest_candle:
 
         recent = df.tail(days)
 
     else:
 
-        recent = df.iloc[:-1].tail(days)
+        # Ignore current forming candle
+        recent = (
+            df.iloc[:-1]
+            .tail(days)
+        )
 
     if len(recent) < days:
         return None
 
     bodies = []
 
+    # =====================================================
+    # BUILD BODY %
+    # =====================================================
+
     for _, row in recent.iterrows():
 
         open_price = row["open"]
         close_price = row["close"]
 
+        # MUST BE GREEN
         if close_price <= open_price:
             return None
 
         body_pct = (
-            (close_price - open_price)
+            (
+                close_price
+                - open_price
+            )
             / open_price
         ) * 100
 
-        if body_pct < MIN_BODY_PERCENT:
+        # Reject weak candles
+        if (
+            body_pct
+            < MIN_BODY_PERCENT
+        ):
             return None
 
         bodies.append(body_pct)
 
-    # STRICT PROGRESSIVE
+    # =====================================================
+    # STRICTLY PROGRESSIVE
+    # =====================================================
+
     progressive = all(
-        bodies[i] < bodies[i + 1]
-        for i in range(len(bodies) - 1)
+        bodies[i]
+        < bodies[i + 1]
+
+        for i in range(
+            len(bodies) - 1
+        )
     )
 
     if not progressive:
         return None
 
-    # REJECT FLAT EXPANSION
+    # =====================================================
+    # REJECT FLAT MOMENTUM
+    #
+    # 1,10,11 ❌
+    # =====================================================
+
     last_expansion = (
-        bodies[-1] / bodies[-2]
+        bodies[-1]
+        / bodies[-2]
     )
 
-    if last_expansion < MIN_LAST_EXPANSION:
+    if (
+        last_expansion
+        < MIN_LAST_EXPANSION
+    ):
         return None
 
-    # REJECT EXHAUSTION
+    # =====================================================
+    # REJECT OVEREXTENSION
+    #
+    # 1,8,121 ❌
+    # =====================================================
+
     final_body = bodies[-1]
 
-    if final_body > MAX_FINAL_BODY_PERCENT:
+    if (
+        final_body
+        > MAX_FINAL_BODY_PERCENT
+    ):
         return None
 
     # =====================================================
@@ -253,12 +332,17 @@ def qualifies(
 
     acceleration_scores = []
 
-    for i in range(len(bodies) - 1):
+    for i in range(
+        len(bodies) - 1
+    ):
 
         prev_body = bodies[i]
         next_body = bodies[i + 1]
 
-        ratio = next_body / prev_body
+        ratio = (
+            next_body
+            / prev_body
+        )
 
         if (
             IDEAL_ACCELERATION_MIN
@@ -281,10 +365,14 @@ def qualifies(
 
             score = max(
                 0,
-                1 - (distance / 5)
+                1 - (
+                    distance / 5
+                )
             )
 
-        acceleration_scores.append(score)
+        acceleration_scores.append(
+            score
+        )
 
     acceleration_quality = (
         sum(acceleration_scores)
@@ -292,7 +380,7 @@ def qualifies(
     )
 
     # =====================================================
-    # WICK ANALYSIS
+    # LAST CANDLE WICK ANALYSIS
     # =====================================================
 
     last = recent.iloc[-1]
@@ -303,36 +391,42 @@ def qualifies(
     close_price = last["close"]
 
     body_size = abs(
-        close_price - open_price
+        close_price
+        - open_price
     )
 
     if body_size <= 0:
         return None
 
     upper_wick = (
-        high_price - close_price
+        high_price
+        - close_price
     )
 
     lower_wick = (
-        open_price - low_price
+        open_price
+        - low_price
     )
 
     upper_wick_ratio = (
-        upper_wick / body_size
+        upper_wick
+        / body_size
     )
 
     lower_wick_ratio = (
-        lower_wick / body_size
+        lower_wick
+        / body_size
     )
 
     # =====================================================
-    # FINAL SCORE
+    # SCORING
     # =====================================================
 
     momentum_score = sum(bodies)
 
     curve_bonus = (
-        bodies[-1] * acceleration_quality
+        bodies[-1]
+        * acceleration_quality
     )
 
     wick_penalty = (
@@ -357,6 +451,7 @@ def qualifies(
         "momentum_score": momentum_score,
         "curve_bonus": curve_bonus,
         "upper_wick_ratio": upper_wick_ratio,
+        "lower_wick_ratio": lower_wick_ratio,
         "bodies": bodies
     }
 
@@ -369,25 +464,40 @@ def process_symbol(
     use_latest_candle
 ):
 
-    if VERBOSE_SCAN:
-        print(f"Checking {symbol}")
+    try:
 
-    df = get_daily_klines(symbol)
+        if VERBOSE_SCAN:
 
-    if df is None:
-        return None
+            print(
+                f"Checking {symbol}"
+            )
 
-    result = qualifies(
-        df,
-        use_latest_candle
-    )
+        df = get_daily_klines(symbol)
 
-    if result:
+        if df is None:
+            return None
 
-        return {
-            "symbol": symbol,
-            **result
-        }
+        result = qualifies(
+            df,
+            use_latest_candle
+        )
+
+        if result:
+
+            print(
+                f"✅ MATCH: {symbol}"
+            )
+
+            return {
+                "symbol": symbol,
+                **result
+            }
+
+    except Exception as e:
+
+        print(
+            f"{symbol} Error: {e}"
+        )
 
     return None
 
@@ -400,49 +510,116 @@ def send_telegram(message):
     if not TELEGRAM_ENABLED:
         return
 
-    url = (
-        f"https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
-    )
+    if (
+        not TELEGRAM_BOT_TOKEN
+        or not TELEGRAM_CHAT_ID
+    ):
+        print(
+            "Telegram secrets missing"
+        )
 
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
+        return
 
-    requests.post(
-        url,
-        data=payload,
-        timeout=10
-    )
+    try:
+
+        url = (
+            f"https://api.telegram.org/bot"
+            f"{TELEGRAM_BOT_TOKEN}"
+            f"/sendMessage"
+        )
+
+        payload = {
+            "chat_id":
+            TELEGRAM_CHAT_ID,
+
+            "text":
+            message
+        }
+
+        requests.post(
+            url,
+            data=payload,
+            timeout=10
+        )
+
+        print(
+            "📩 Telegram sent"
+        )
+
+    except Exception as e:
+
+        print(
+            f"Telegram Error: {e}"
+        )
 
 # =========================================================
 # MAIN
 # =========================================================
 
 def main():
-    if not should_run_scan():
 
-    print(
-        "Not inside execution window."
+    now = datetime.now(
+        timezone.utc
     )
-
-    return
-
-    now = datetime.now(timezone.utc)
 
     print(
         f"\n[{now}] "
-        f"RUNNING NO RED ZONE SCAN"
+        f"Workflow started"
     )
+
+    # =====================================================
+    # ONLY EXECUTE INSIDE WINDOW
+    # =====================================================
+
+    if not should_run_scan():
+
+        print(
+            "Not inside execution window."
+        )
+
+        return
+
+    print(
+        "Inside execution window."
+    )
+
+    # =====================================================
+    # CANDLE MODE
+    # =====================================================
 
     use_latest_candle = (
         should_use_latest_candle(now)
     )
 
+    if use_latest_candle:
+
+        print(
+            "Using latest candle."
+        )
+
+    else:
+
+        print(
+            "Ignoring current "
+            "forming candle."
+        )
+
+    # =====================================================
+    # GET PAIRS
+    # =====================================================
+
     pairs = get_usdt_pairs()
 
+    print(
+        f"Scanning "
+        f"{len(pairs)} pairs..."
+    )
+
     results = []
+
+    # =====================================================
+    # MULTITHREADED SCAN
+    # =====================================================
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
@@ -459,14 +636,19 @@ def main():
             for symbol in pairs
         ]
 
-        for future in as_completed(futures):
+        for future in as_completed(
+            futures
+        ):
 
             result = future.result()
 
             if result:
                 results.append(result)
 
-    # SORT
+    # =====================================================
+    # SORT RESULTS
+    # =====================================================
+
     results = sorted(
         results,
         key=lambda x: x["score"],
@@ -476,12 +658,13 @@ def main():
     top = results[:TOP_RESULTS]
 
     # =====================================================
-    # MESSAGE
+    # BUILD MESSAGE
     # =====================================================
 
     message = (
-        "🚀 NO RED ZONE STRATEGY 🚀\n"
-        f"UTC: "
+        "🚀 NO RED ZONE STRATEGY 🚀\n\n"
+
+        f"UTC Time: "
         f"{now.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     )
 
@@ -500,6 +683,7 @@ def main():
 
             body_text = ", ".join(
                 f"{x:.2f}%"
+
                 for x in coin["bodies"]
             )
 
@@ -507,11 +691,26 @@ def main():
                 f"{i}. {coin['symbol']}\n"
                 f"Score: "
                 f"{coin['score']:.2f}\n"
+                f"Momentum: "
+                f"{coin['momentum_score']:.2f}\n"
+                f"Curve Bonus: "
+                f"{coin['curve_bonus']:.2f}\n"
+                f"Upper Wick: "
+                f"{coin['upper_wick_ratio']:.2f}\n"
+                f"Lower Wick: "
+                f"{coin['lower_wick_ratio']:.2f}\n"
                 f"Bodies: "
                 f"[{body_text}]\n\n"
             )
 
+    # =====================================================
+    # OUTPUT
+    # =====================================================
+
+    print("\n")
+    print("=" * 60)
     print(message)
+    print("=" * 60)
 
     send_telegram(message)
 
@@ -521,3 +720,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
