@@ -74,7 +74,7 @@ def should_run_scan():
     now = datetime.now(timezone.utc)
 
     target_hour = 23
-    target_minute = 50
+    target_minute = 57
 
     current_minutes = (
         now.hour * 60
