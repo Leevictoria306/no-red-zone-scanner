@@ -1,4 +1,4 @@
-name: No Red Zone Scanner
+name: Daily No Red Zone Scanner
 
 on:
 
@@ -32,4 +32,4 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python no_red_zone.py
+        run: python no_red_zone_daily.py
