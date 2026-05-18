@@ -82,18 +82,6 @@ def should_run_scan():
 
     now = datetime.now(timezone.utc)
 
-    valid_hours = [
-        3,
-        7,
-        11,
-        15,
-        19,
-        23
-    ]
-
-    if now.hour not in valid_hours:
-        return False
-
     return (
         57
         <= now.minute
