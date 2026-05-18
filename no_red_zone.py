@@ -661,7 +661,7 @@ def main():
     # =====================================================
 
     message = (
-        "🚀 NO RED ZONE STRATEGY 🚀\n\n"
+        "🚀 DAILY NO RED ZONE STRATEGY 🚀\n\n"
 
         f"UTC Time: "
         f"{now.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
